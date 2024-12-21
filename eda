@@ -1,0 +1,204 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import streamlit as st
+import io
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+# Function to send email
+def send_email(subject, body, recipient_email):
+    sender_email = "your_email@example.com"  # Replace with your email address
+    sender_password = "your_password"        # Replace with your email password
+
+    msg = MIMEMultipart()
+    msg["From"] = sender_email
+    msg["To"] = recipient_email
+    msg["Subject"] = subject
+
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:  # Update SMTP server if not using Gmail
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        st.success("Email sent successfully!")
+    except Exception as e:
+        st.error(f"Error sending email: {e}")
+
+# Function for Exploratory Data Analysis
+def exploratory_data_analysis(df, selected_columns, time_series_column, recipient_email):
+    st.write("\n--- Exploratory Data Analysis ---")
+
+    # 1. Basic information about the dataset
+    st.write("\n1. Dataset Information")
+    st.write("Shape of the dataset:", df.shape)
+    st.write("\nColumns:")
+    st.write(df.columns.tolist())
+    st.write("\nDataset Info:")
+    buffer = io.StringIO()
+    df.info(buf=buffer)
+    st.text(buffer.getvalue())
+
+    # 2. Checking for missing values
+    st.write("\n2. Missing Values")
+    missing_values = df.isnull().sum()
+    st.write(missing_values[missing_values > 0])
+
+    # 3. Descriptive Statistics
+    st.write("\n3. Descriptive Statistics")
+    st.write(df.describe(include='all'))
+
+    # 4. Check for duplicates
+    st.write("\n4. Checking for Duplicates")
+    duplicate_count = df.duplicated().sum()
+    st.write(f"Number of duplicate rows: {duplicate_count}")
+
+    # 5. Correlation Matrix (for numeric columns)
+    if not df.select_dtypes(include=np.number).empty:
+        st.write("\n5. Correlation Matrix")
+        corr = df.corr()
+        st.write(corr)
+
+        st.write("Heatmap:")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
+        st.pyplot(fig)
+
+    # 6. Time Series Analysis
+    st.write("\n6. Time Series Analysis")
+    if time_series_column in df.columns:
+        if not pd.api.types.is_datetime64_any_dtype(df[time_series_column]):
+            st.write(f"Converting '{time_series_column}' to datetime...")
+            df[time_series_column] = pd.to_datetime(df[time_series_column], errors='coerce')
+
+        if df[time_series_column].isnull().all():
+            st.write(f"Error: '{time_series_column}' column could not be converted to datetime.")
+        else:
+            # Filter the last 120 days
+            df = df[df[time_series_column] >= (pd.Timestamp.now() - pd.Timedelta(days=120))]
+
+            numeric_columns = df.select_dtypes(include=np.number).columns.tolist()
+            if numeric_columns:
+                df.set_index(time_series_column, inplace=True)
+                email_body = "Outlier Report:\n\n"
+                for column in numeric_columns:
+                    st.write(f"Time Series for {column} over {time_series_column}")
+                    fig, ax = plt.subplots()
+
+                    # Resample to daily frequency and aggregate
+                    daily_data = df[column].resample('D').mean()
+
+                    # Calculate rolling median and 90% confidence interval
+                    rolling_median = daily_data.rolling(window=7, center=True).median()
+                    lower_bound = rolling_median - 1.5 * daily_data.std()
+                    upper_bound = rolling_median + 1.5 * daily_data.std()
+                    outliers = (daily_data < lower_bound) | (daily_data > upper_bound)
+
+                    # Plot time series with outliers highlighted
+                    ax.plot(daily_data.index, daily_data, marker='o', label='Data')
+                    ax.plot(daily_data.index, rolling_median, color='green', label='Trend (Rolling Median)')
+                    ax.fill_between(daily_data.index, lower_bound, upper_bound, color='yellow', alpha=0.2, label='90% Confidence Interval')
+                    ax.scatter(daily_data.index[outliers], daily_data[outliers], color='red', label='Outliers', zorder=5)
+                    ax.set_title(f'Time Series of {column} with Outliers')
+                    ax.set_xlabel('Date (Daily)')
+                    ax.set_ylabel(column)
+                    plt.xticks(rotation=45)
+                    ax.legend()
+                    st.pyplot(fig)
+
+                    # Append outlier information to email body
+                    if outliers.any():
+                        email_body += f"Outliers detected in {column}:\n"
+                        email_body += daily_data[outliers].to_string() + "\n\n"
+
+                df.reset_index(inplace=True)  # Reset index back to original
+
+                # Send email if outliers exist
+                if "Outliers detected in" in email_body:
+                    send_email("Outlier Alert", email_body, recipient_email)
+            else:
+                st.write("No numeric columns available for time series analysis.")
+    else:
+        st.write(f"The dataset does not contain a '{time_series_column}' column.")
+
+    # 7. Categorical Column Analysis
+    st.write("\n7. Categorical Columns Analysis")
+    for column in selected_columns:
+        st.write(f"Value Counts of {column}")
+        fig, ax = plt.subplots()
+        df[column].value_counts().plot(kind='bar', color='orange', ax=ax)
+        ax.set_title(f'Value Counts of {column}')
+        ax.set_xlabel(column)
+        ax.set_ylabel('Count')
+        st.pyplot(fig)
+
+    # 8. Outlier Detection using Boxplot
+    st.write("\n8. Outlier Detection")
+    for column in df.select_dtypes(include=np.number):
+        st.write(f"Boxplot of {column}")
+        fig, ax = plt.subplots()
+        sns.boxplot(x=df[column], color='green', ax=ax)
+        ax.set_title(f'Boxplot of {column}')
+        st.pyplot(fig)
+
+    st.write("\n--- End of Analysis ---")
+
+# Streamlit App
+st.title("Exploratory Data Analysis (EDA) App")
+
+if 'reset' not in st.session_state:
+    st.session_state.reset = False
+if 'uploaded_file' not in st.session_state:
+    st.session_state.uploaded_file = None
+if 'selected_columns' not in st.session_state:
+    st.session_state.selected_columns = []
+if 'time_series_column' not in st.session_state:
+    st.session_state.time_series_column = None
+
+# Reset app
+if st.button("Reset App"):
+    st.session_state.reset = True
+    st.session_state.uploaded_file = None
+    st.session_state.selected_columns = []
+    st.session_state.time_series_column = None
+    st.experimental_rerun()
+
+# File upload
+uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
+if uploaded_file is not None:
+    st.session_state.uploaded_file = uploaded_file
+
+df = None
+if st.session_state.uploaded_file is not None:
+    df = pd.read_csv(st.session_state.uploaded_file)
+    st.write("### Uploaded Dataset")
+    st.write(df.head())
+
+    # Select column for time series analysis
+    st.write("\nSelect column for time series analysis:")
+    st.session_state.time_series_column = st.selectbox("Select time series column:", options=df.columns.tolist(), key='time_series_col')
+
+    # Dropdowns for selecting categorical columns
+    categorical_columns = df.select_dtypes(include='object').columns.tolist()
+    if categorical_columns:
+        st.write("\nSelect up to three categorical columns for analysis:")
+        column1 = st.selectbox("Select first categorical column:", options=[None] + categorical_columns, index=0, key='col1')
+        column2 = st.selectbox("Select second categorical column:", options=[None] + categorical_columns, index=0, key='col2')
+        column3 = st.selectbox("Select third categorical column:", options=[None] + categorical_columns, index=0, key='col3')
+
+        st.session_state.selected_columns = [col for col in [column1, column2, column3] if col is not None]
+
+        recipient_email = st.text_input("Enter your email address to receive outlier alerts:")
+
+        if st.button("Generate EDA"):
+            if st.session_state.selected_columns and st.session_state.time_series_column:
+                with st.spinner("Performing EDA..."):
+                    exploratory_data_analysis(df, st.session_state.selected_columns, st.session_state.time_series_column, recipient_email)
+            else:
+                st.write("Please select at least one categorical column and a time series column for analysis.")
+    else:
+        st.write("No categorical columns found in the dataset.")
