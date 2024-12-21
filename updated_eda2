@@ -1,0 +1,122 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import streamlit as st
+import io
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+# Function to send email
+def send_email(subject, body, recipient_email):
+    sender_email = "your_email@example.com"  # Replace with your email address
+    sender_password = "your_password"        # Replace with your email password
+
+    msg = MIMEMultipart()
+    msg["From"] = sender_email
+    msg["To"] = recipient_email
+    msg["Subject"] = subject
+
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP("smtp.office365.com", 587) as server:  # Update SMTP server for Outlook
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        st.success("Email sent successfully!")
+    except Exception as e:
+        st.error(f"Error sending email: {e}")
+
+# Function for Exploratory Data Analysis
+def exploratory_data_analysis(df, selected_columns, time_series_column, recipient_email):
+    st.write("\n--- Exploratory Data Analysis ---")
+
+    # 1. Basic information about the dataset
+    st.write("\n1. Dataset Information")
+    st.write("Shape of the dataset:", df.shape)
+    st.write("\nColumns:")
+    st.write(df.columns.tolist())
+    st.write("\nDataset Info:")
+    buffer = io.StringIO()
+    df.info(buf=buffer)
+    st.text(buffer.getvalue())
+
+    # 2. Checking for missing values
+    st.write("\n2. Missing Values")
+    missing_values = df.isnull().sum()
+    st.write(missing_values[missing_values > 0])
+
+    # 3. Descriptive Statistics
+    st.write("\n3. Descriptive Statistics")
+    st.write(df.describe(include='all'))
+
+    # 4. Check for duplicates
+    st.write("\n4. Checking for Duplicates")
+    duplicate_count = df.duplicated().sum()
+    st.write(f"Number of duplicate rows: {duplicate_count}")
+
+    # 5. Correlation Matrix (for numeric columns)
+    if not df.select_dtypes(include=np.number).empty:
+        st.write("\n5. Correlation Matrix")
+        corr = df.corr()
+        st.write(corr)
+
+        st.write("Heatmap:")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
+        st.pyplot(fig)
+
+    # 6. Time Series Analysis
+    st.write("\n6. Time Series Analysis")
+    if time_series_column in df.columns:
+        if not pd.api.types.is_datetime64_any_dtype(df[time_series_column]):
+            st.write(f"Converting '{time_series_column}' to datetime...")
+            df[time_series_column] = pd.to_datetime(df[time_series_column], errors='coerce')
+
+        if df[time_series_column].isnull().all():
+            st.write(f"Error: '{time_series_column}' column could not be converted to datetime.")
+        else:
+            # Filter the last 120 days
+            df = df[df[time_series_column] >= (pd.Timestamp.now() - pd.Timedelta(days=120))]
+
+            numeric_columns = df.select_dtypes(include=np.number).columns.tolist()
+            if numeric_columns:
+                df.set_index(time_series_column, inplace=True)
+                email_body = "Outlier Report:\n\n"
+                overall_outlier_summary = []
+
+                for column in numeric_columns:
+                    st.write(f"Time Series for {column} over {time_series_column}")
+                    fig, ax = plt.subplots()
+
+                    # Resample to daily frequency and aggregate
+                    daily_data = df[column].resample('D').mean()
+
+                    # Calculate rolling mean and 90% confidence interval
+                    rolling_mean = daily_data.rolling(window=7, center=True).mean()
+                    std_dev = daily_data.std()
+                    lower_bound = rolling_mean - 1.5 * std_dev
+                    upper_bound = rolling_mean + 1.5 * std_dev
+                    outliers = (daily_data < lower_bound) | (daily_data > upper_bound)
+
+                    # Plot time series with outliers highlighted
+                    ax.plot(daily_data.index, daily_data, marker='o', label='Data')
+                    ax.plot(daily_data.index, rolling_mean, color='green', label='Trend (Rolling Mean)')
+                    ax.fill_between(daily_data.index, lower_bound, upper_bound, color='yellow', alpha=0.2, label='90% Confidence Interval')
+                    ax.scatter(daily_data.index[outliers], daily_data[outliers], color='red', label='Outliers', zorder=5)
+                    ax.set_title(f'Time Series of {column} with Outliers')
+                    ax.set_xlabel('Date (Daily)')
+                    ax.set_ylabel(column)
+                    plt.xticks(rotation=45)
+                    ax.legend()
+                    st.pyplot(fig)
+
+                    # Append outlier information to email body and app display
+                    if outliers.any():
+                        outlier_summary = df.loc[outliers, ["facility"]].copy()
+                        outlier_summary[column] = daily_data[outliers]
+                        email_body += f"Outliers detected in {column}:\n"
+                        email_body += outlier_summary.to_string() + "\n\n"
+                        email<|endoftext|>
